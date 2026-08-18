@@ -386,8 +386,20 @@ def copy_data_row_format(ws, source_row, target_row):
 def mark_long_address(cell, address):
     """Highlight AddressLine1 when the complete address exceeds 105 characters."""
     if len(str(address or '')) > 105:
-        cell.font = cell.font.copy(bold=True)
-        cell.fill = PatternFill(fill_type='solid', fgColor='FFFF00')
+        # openpyxl style objects are immutable; copy the existing font and
+        # change only the bold property so all other template font settings
+        # are preserved.
+        new_font = copy.copy(cell.font)
+        new_font.bold = True
+        cell.font = new_font
+
+        # Explicit solid yellow fill. Preserve the template's other style
+        # attributes while changing only the fill.
+        cell.fill = PatternFill(
+            fill_type='solid',
+            fgColor='FFFFFF00',
+            bgColor='FFFFFF00'
+        )
 
 
 def fill_recipient_sheet(ws, records, nfei_yes, is_us):
@@ -476,10 +488,14 @@ def fill_recipient_sheet(ws, records, nfei_yes, is_us):
 
         # If the complete original address exceeds 105 characters, flag
         # AddressLine1 for manual review: bold + yellow fill.
-        mark_long_address(
-            ws.cell(row=r, column=COL['Recipient_AddressLine1']),
-            rec['custAddress']
-        )
+        # Long-address warning is applied again after all value/formula
+        # writes, ensuring no later cell operation can replace the style.
+        long_address = str(rec.get('custAddress') or '')
+        if len(long_address) > 105:
+            mark_long_address(
+                ws.cell(row=r, column=COL['Recipient_AddressLine1']),
+                long_address
+            )
 
         # The only fixed US values required outside the template formulas.
         # These are constants, not calculations.
@@ -501,6 +517,14 @@ def fill_recipient_sheet(ws, records, nfei_yes, is_us):
             except Exception:
                 translated = formula
             ws.cell(row=r, column=col).value = translated
+
+        # Final style enforcement for long addresses, after every value and
+        # formula write has completed.
+        if len(str(rec.get('custAddress') or '')) > 105:
+            mark_long_address(
+                ws.cell(row=r, column=COL['Recipient_AddressLine1']),
+                rec['custAddress']
+            )
 
         # Force the required date display without changing the underlying
         # Excel serial number.
