@@ -43,6 +43,7 @@ import tempfile
 from pathlib import Path
 import xlrd
 import openpyxl
+from openpyxl.styles import PatternFill
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +382,14 @@ def copy_data_row_format(ws, source_row, target_row):
     dst_dim.hidden = src_dim.hidden
 
 
+
+def mark_long_address(cell, address):
+    """Highlight AddressLine1 when the complete address exceeds 105 characters."""
+    if len(str(address or '')) > 105:
+        cell.font = cell.font.copy(bold=True)
+        cell.fill = PatternFill(fill_type='solid', fgColor='FFFF00')
+
+
 def fill_recipient_sheet(ws, records, nfei_yes, is_us):
     """Formula-only mode.
 
@@ -464,6 +473,13 @@ def fill_recipient_sheet(ws, records, nfei_yes, is_us):
 
         for key, value in values.items():
             ws.cell(row=r, column=COL[key]).value = value
+
+        # If the complete original address exceeds 105 characters, flag
+        # AddressLine1 for manual review: bold + yellow fill.
+        mark_long_address(
+            ws.cell(row=r, column=COL['Recipient_AddressLine1']),
+            rec['custAddress']
+        )
 
         # The only fixed US values required outside the template formulas.
         # These are constants, not calculations.
