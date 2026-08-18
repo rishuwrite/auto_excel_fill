@@ -1,0 +1,109 @@
+
+name: Build Windows FBT Portable
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'generate_fbt.py'
+      - 'fbt_gui.py'
+      - 'START_FBT.bat'
+      - 'FBT_US_NFEI_YES.xls'
+      - 'FBT_NON_US_NFEI_YES.xls'
+      - 'requirements.txt'
+      - '.github/workflows/build-windows.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download full Python for Windows
+        shell: pwsh
+        run: |
+          curl.exe -L "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" -o python-installer.exe
+
+      - name: Install Python into portable runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path runtime | Out-Null
+
+          Start-Process `
+            -FilePath ".\python-installer.exe" `
+            -ArgumentList "/quiet", "InstallAllUsers=0", "TargetDir=$PWD\runtime", "PrependPath=0", "Include_pip=1", "Include_tcltk=1", "Include_test=0" `
+            -Wait
+
+          if (-not (Test-Path ".\runtime\python.exe")) {
+            throw "Python installation failed: runtime\python.exe was not found."
+          }
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          .\runtime\python.exe -m pip install --upgrade pip
+
+          if (Test-Path requirements.txt) {
+            .\runtime\python.exe -m pip install -r requirements.txt
+          }
+
+          .\runtime\python.exe -m pip install xlrd openpyxl pywin32
+
+      - name: Test Python and Tkinter
+        shell: pwsh
+        run: |
+          .\runtime\python.exe -c "import tkinter; print('Tkinter OK')"
+          .\runtime\python.exe -c "import openpyxl; print('openpyxl OK')"
+          .\runtime\python.exe -c "import xlrd; print('xlrd OK')"
+
+      - name: Test FBT application import
+        shell: pwsh
+        run: |
+          .\runtime\python.exe -c "import fbt_gui; print('fbt_gui import OK')"
+
+      - name: Create application package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+
+          Copy-Item runtime package\runtime -Recurse
+
+          Copy-Item generate_fbt.py package\
+          Copy-Item fbt_gui.py package\
+          Copy-Item START_FBT.bat package\
+
+          Copy-Item FBT_US_NFEI_YES.xls package\
+          Copy-Item FBT_NON_US_NFEI_YES.xls package\
+
+          if (Test-Path NFEI_YES_Booking_Data.xls) {
+            Copy-Item NFEI_YES_Booking_Data.xls package\
+          }
+
+          if (Test-Path README-WINDOWS.txt) {
+            Copy-Item README-WINDOWS.txt package\
+          }
+
+      - name: Remove unnecessary Python files
+        shell: pwsh
+        run: |
+          Get-ChildItem package\runtime -Directory -Recurse -Filter "__pycache__" |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+          Get-ChildItem package\runtime -Directory -Recurse -Filter "test" |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path package\* `
+            -DestinationPath FBT-Manifest-Generator-Portable-Windows.zip `
+            -CompressionLevel Optimal
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: FBT-Manifest-Generator-Portable-Windows
+          path: FBT-Manifest-Generator-Portable-Windows.zip
