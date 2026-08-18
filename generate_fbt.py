@@ -465,6 +465,15 @@ def fill_recipient_sheet(ws, records, nfei_yes, is_us):
         for key, value in values.items():
             ws.cell(row=r, column=COL[key]).value = value
 
+        # The only fixed US values required outside the template formulas.
+        # These are constants, not calculations.
+        if is_us:
+            ws.cell(row=r, column=COL['Freight_charges']).value = 13.5
+            ws.cell(row=r, column=COL['Insurance_charges']).value = 0.5
+        else:
+            ws.cell(row=r, column=COL['Freight_charges']).value = None
+            ws.cell(row=r, column=COL['Insurance_charges']).value = None
+
         # Drag ONLY the formulas that already exist in template row 2.
         # This includes UNIT_VALUE1, FOBValue, Other_charges, etc., exactly
         # as the template defines them. No new ROUND/TRUNC formula is added.
