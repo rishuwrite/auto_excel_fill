@@ -1,0 +1,45 @@
+name: Generate FBT files
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_file:
+        description: 'Path to booking .xls in the repo'
+        required: true
+      mode:
+        description: 'NFEI mode'
+        required: true
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
+      us_template:
+        description: 'Path to FBT_US_NFEI_*.xls template in the repo'
+        required: true
+      nonus_template:
+        description: 'Path to FBT_NON_US_NFEI_*.xls template in the repo'
+        required: true
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install LibreOffice
+        run: sudo apt-get update && sudo apt-get install -y libreoffice
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+      - name: Generate
+        run: |
+          python3 generate_fbt.py "${{ github.event.inputs.booking_file }}" \
+            --mode "${{ github.event.inputs.mode }}" \
+            --us-template "${{ github.event.inputs.us_template }}" \
+            --nonus-template "${{ github.event.inputs.nonus_template }}" \
+            --outdir ./out
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: fbt-output
+          path: out/*.xls
