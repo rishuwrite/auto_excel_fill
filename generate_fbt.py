@@ -33,6 +33,7 @@ Usage:
 """
 
 import argparse
+import copy
 import datetime
 import re
 import shutil
@@ -40,8 +41,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from decimal import Decimal, ROUND_DOWN
-
 import xlrd
 import openpyxl
 
@@ -364,81 +363,130 @@ def trim_trailing_rows_and_columns(ws, min_data_row=2):
         ws.delete_cols(last_col + 1, ws.max_column - last_col)
 
 
+def copy_data_row_format(ws, source_row, target_row):
+    """Copy the template data-row formatting to target_row."""
+    if target_row == source_row:
+        return
+    for c in range(1, LAST_COL + 1):
+        src = ws.cell(row=source_row, column=c)
+        dst = ws.cell(row=target_row, column=c)
+        if src.has_style:
+            dst._style = copy.copy(src._style)
+        dst.number_format = src.number_format
+        if src.protection:
+            dst.protection = copy.copy(src.protection)
+    src_dim = ws.row_dimensions[source_row]
+    dst_dim = ws.row_dimensions[target_row]
+    dst_dim.height = src_dim.height
+    dst_dim.hidden = src_dim.hidden
+
+
 def fill_recipient_sheet(ws, records, nfei_yes, is_us):
+    """Formula-only mode.
+
+    Rules:
+      - No Python calculation or rounding of monetary amounts.
+      - InvoiceValue comes directly from the booking export and is NOT
+        overwritten by a template formula.
+      - Every formula already present in template row 2 is dragged down with
+        relative references translated to each generated row.
+      - UNIT_VALUE1 is NOT replaced with ROUND/TRUNC; the template's own
+        formula is used exactly as supplied.
+      - Date is a real Excel 1900-system serial and is displayed as ddmmyy.
+      - The complete row-2 formatting/borders are copied to every generated row.
+    """
     original_last_row = ws.max_row
     clear_data_rows(ws, 2, original_last_row, LAST_COL)
 
-    fill_charges = not (nfei_yes and not is_us)
+    # Capture row-2 formulas BEFORE writing data.
+    # InvoiceValue is deliberately excluded: its amount must remain exactly
+    # the booking amount, with no Python/template recalculation.
+    template_formulas = {}
+    for c in range(1, LAST_COL + 1):
+        if c == COL['InvoiceValue']:
+            continue
+        value = ws.cell(row=2, column=c).value
+        if isinstance(value, str) and value.startswith('='):
+            template_formulas[c] = value
+
     date_serial = excel_today_serial()
 
+    from openpyxl.formula.translate import Translator
+    from openpyxl.utils import get_column_letter
+
     for i, rec in enumerate(records):
-        r = i + 2  # first data row is Excel row 2
+        r = i + 2
+
+        # Copy the complete template data-row style first, including borders,
+        # number formats, protection and row height.
+        copy_data_row_format(ws, 2, r)
+
         addr1, addr2, addr3 = split_address(rec['custAddress'])
 
-        ws.cell(row=r, column=COL['SequenceNumber']).value = i + 1
-        ws.cell(row=r, column=COL['Recipient_ContactName']).value = rec['custName']
-        ws.cell(row=r, column=COL['Recipient_CompanyName']).value = rec['custName']
-        ws.cell(row=r, column=COL['Recipient_AddressLine1']).value = addr1
-        ws.cell(row=r, column=COL['Recipient_AddressLine2']).value = addr2
-        ws.cell(row=r, column=COL['Recipient_AddressLine3']).value = addr3
-        ws.cell(row=r, column=COL['Recipient_Country']).value = rec['destinationCountry']
-        ws.cell(row=r, column=COL['Recipient_City']).value = rec['custCity']
-        ws.cell(row=r, column=COL['Recipient_State']).value = rec['state']
-        ws.cell(row=r, column=COL['Recipient_Postalcode']).value = rec['pin']
-        ws.cell(row=r, column=COL['Recipient_PhoneNumber']).value = rec['custMobile']
-        ws.cell(row=r, column=COL['Reference_1']).value = rec['refNumber']
-        ws.cell(row=r, column=COL['InvoiceNumber']).value = rec['invoice']
-        ws.cell(row=r, column=COL['InvoiceDate']).value = date_serial
-        ws.cell(row=r, column=COL['TotalNoofPackage']).value = 1
-        ws.cell(row=r, column=COL['TotalShipmentweight']).value = 0.5
+        values = {
+            'SequenceNumber': i + 1,
+            'Recipient_ContactName': rec['custName'],
+            'Recipient_CompanyName': rec['custName'],
+            'Recipient_AddressLine1': addr1,
+            'Recipient_AddressLine2': addr2,
+            'Recipient_AddressLine3': addr3,
+            'Recipient_Country': rec['destinationCountry'],
+            'Recipient_City': rec['custCity'],
+            'Recipient_State': rec['state'],
+            'Recipient_Postalcode': rec['pin'],
+            'Recipient_PhoneNumber': rec['custMobile'],
+            'Reference_1': rec['refNumber'],
+            'InvoiceNumber': rec['invoice'],
 
-        if fill_charges:
-            ws.cell(row=r, column=COL['Freight_charges']).value = 13.5
-            ws.cell(row=r, column=COL['Insurance_charges']).value = 0.5
-            ws.cell(row=r, column=COL['Other_charges']).value = f'=AG{r}-(AE{r}+AA{r}+AB{r})'
-            ws.cell(row=r, column=COL['FOBValue']).value = f'=(AG{r}-(AA{r}+AB{r}))/1.275'
+            # Real Excel date serial. The number format below makes Excel
+            # display it as ddmmyy, e.g. 180826.
+            'InvoiceDate': date_serial,
 
-        # Keep UNIT_VALUE1 at a maximum of 2 decimals by truncating at 2 decimals and making the smallest
-        # required adjustment to InvoiceValue. This avoids circular formulas:
-        # UNIT_VALUE1 still references the final InvoiceValue/FOBValue cells.
-        qty = rec['qty']
-        original_invoice = rec['netDeclaredAmount']
-        if qty and float(qty) != 0:
-            qty_d = Decimal(str(qty))
-            invoice_d = Decimal(str(original_invoice))
-            if is_us:
-                # Existing US relationship:
-                # Freight=13.5, Insurance=0.5,
-                # FOB=(Invoice-(Freight+Insurance))/1.275, UNIT=FOB/QTY.
-                charges = Decimal('14.0')
-                factor = Decimal('1.275')
-                raw_unit = ((invoice_d - charges) / factor) / qty_d
-                unit_2dp = raw_unit.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
-                target_fob = unit_2dp * qty_d
-                adjusted_invoice = target_fob * factor + charges
-            else:
-                # Non-US: UNIT=Invoice/QTY, so Invoice=TRUNCATE(UNIT,2)*QTY.
-                raw_unit = invoice_d / qty_d
-                unit_2dp = raw_unit.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
-                adjusted_invoice = unit_2dp * qty_d
-            ws.cell(row=r, column=COL['InvoiceValue']).value = float(adjusted_invoice)
-        else:
-            ws.cell(row=r, column=COL['InvoiceValue']).value = original_invoice
+            'TotalNoofPackage': 1,
+            'TotalShipmentweight': 0.5,
+            'Currency': 'US DOLLARS-USD',
+            'CountryofManufacture': 'IN-INDIA',
+            'Commodity': rec['content'],
+            'HSCODE1': hs_code(rec['content'], nfei_yes, is_us),
+            'StofOriginofgoods': 'Gurugram',
+            'DisOfOriginofgoods': 'Haryana',
+            'QTY': rec['qty'],
+            'UOM1': 'PIECE',
+            'AdditionalInfo': ADDITIONAL_INFO_TEXT,
+        }
 
-        ws.cell(row=r, column=COL['Currency']).value = 'US DOLLARS-USD'
-        ws.cell(row=r, column=COL['CountryofManufacture']).value = 'IN-INDIA'
-        ws.cell(row=r, column=COL['Commodity']).value = rec['content']
-        ws.cell(row=r, column=COL['HSCODE1']).value = hs_code(rec['content'], nfei_yes, is_us)
-        ws.cell(row=r, column=COL['StofOriginofgoods']).value = 'Gurugram'
-        ws.cell(row=r, column=COL['DisOfOriginofgoods']).value = 'Haryana'
-        ws.cell(row=r, column=COL['QTY']).value = rec['qty']
-        ws.cell(row=r, column=COL['UOM1']).value = 'PIECE'
-        ws.cell(row=r, column=COL['UNIT_VALUE1']).value = f'=AG{r}/AN{r}' if not is_us else f'=AE{r}/AN{r}'
-        ws.cell(row=r, column=COL['UNIT_Weight1']).value = f'=W{r}/AN{r}'
-        ws.cell(row=r, column=COL['AdditionalInfo']).value = ADDITIONAL_INFO_TEXT
+        # EXACT booking InvoiceValue. No calculation, rounding, truncation,
+        # adjustment or formula replacement.
+        values['InvoiceValue'] = rec['netDeclaredAmount']
+
+        for key, value in values.items():
+            ws.cell(row=r, column=COL[key]).value = value
+
+        # Drag ONLY the formulas that already exist in template row 2.
+        # This includes UNIT_VALUE1, FOBValue, Other_charges, etc., exactly
+        # as the template defines them. No new ROUND/TRUNC formula is added.
+        for col, formula in template_formulas.items():
+            origin = f'{get_column_letter(col)}2'
+            target = f'{get_column_letter(col)}{r}'
+            try:
+                translated = Translator(formula, origin=origin).translate_formula(target)
+            except Exception:
+                translated = formula
+            ws.cell(row=r, column=col).value = translated
+
+        # Force the required date display without changing the underlying
+        # Excel serial number.
+        ws.cell(row=r, column=COL['InvoiceDate']).number_format = 'ddmmyy'
 
     new_last_row = len(records) + 1
     extend_validation_ranges(ws, new_last_row)
+
+    # Reapply the complete template row formatting after all writes so the
+    # bottom borders and formatting remain identical on every generated row.
+    for r in range(2, new_last_row + 1):
+        copy_data_row_format(ws, 2, r)
+        ws.cell(row=r, column=COL['InvoiceDate']).number_format = 'ddmmyy'
+
     trim_trailing_rows_and_columns(ws, min_data_row=2)
 
 
