@@ -396,9 +396,9 @@ def fill_recipient_sheet(ws, records, nfei_yes, is_us):
       - The complete row-2 formatting/borders are copied to every generated row.
     """
     original_last_row = ws.max_row
-    clear_data_rows(ws, 2, original_last_row, LAST_COL)
 
-    # Capture row-2 formulas BEFORE writing data.
+    # IMPORTANT: capture the template's row-2 formulas BEFORE clearing any
+    # data rows. This is the source of truth for every formula in the output.
     # InvoiceValue is deliberately excluded: its amount must remain exactly
     # the booking amount, with no Python/template recalculation.
     template_formulas = {}
@@ -408,6 +408,9 @@ def fill_recipient_sheet(ws, records, nfei_yes, is_us):
         value = ws.cell(row=2, column=c).value
         if isinstance(value, str) and value.startswith('='):
             template_formulas[c] = value
+
+    # Now clear old data rows.
+    clear_data_rows(ws, 2, original_last_row, LAST_COL)
 
     date_serial = excel_today_serial()
 
