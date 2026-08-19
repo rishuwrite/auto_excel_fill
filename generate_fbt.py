@@ -243,7 +243,9 @@ def hs_code(commodity, nfei_yes, is_us):
     c = commodity or ''
     is_eyeglasses = re.search(r'Prescription\s*Eyeglasses', c, re.I)
     is_sunglasses = re.search(r'Polarized\s*Sunglasses', c, re.I)
-    short_codes = nfei_yes and not is_us
+    # US -> 10 digit HSN
+    # Non-US -> 8 digit HSN
+    short_codes = not is_us
     if is_eyeglasses:
         return '90049090' if short_codes else '9004900090'
     if is_sunglasses:
@@ -603,6 +605,33 @@ def main():
     non_us = [r for r in records if r['destinationCountry'].strip().upper() != 'US']
     print(f'  -> {len(us)} US row(s)')
     print(f'  -> {len(non_us)} non-US row(s)')
+
+    # US commodity validation:
+    # Every US commodity must contain the required product suffix
+    # "(MID-INLENSOL2924GUR)". If any US row is missing it, stop the entire
+    # job before creating either output file.
+    required_us_commodity = 'MID-INLENSOL2924GUR'
+    invalid_us = []
+    for i, rec in enumerate(us, start=2):
+        commodity = str(rec.get('content') or '')
+        if required_us_commodity.lower() not in commodity.lower():
+            invalid_us.append(
+                f"booking row {i}: Reference={rec.get('refNumber') or '-'}, "
+                f"Invoice={rec.get('invoice') or '-'}, "
+                f"Commodity={commodity or '[blank]'}"
+            )
+
+    if invalid_us:
+        details = "\n".join(invalid_us[:20])
+        extra = ""
+        if len(invalid_us) > 20:
+            extra = f"\n...and {len(invalid_us) - 20} more invalid US row(s)."
+        raise ValueError(
+            "US commodity validation failed. "
+            "Every US commodity must contain (MID-INLENSOL2924GUR). "
+            "No output files were generated.\n\n"
+            + details + extra
+        )
 
     stamp = datetime.date.today().strftime('%Y-%m-%d')
     mode_label = 'YES' if nfei_yes else 'NO'
